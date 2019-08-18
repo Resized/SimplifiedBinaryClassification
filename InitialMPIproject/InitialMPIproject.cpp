@@ -34,6 +34,8 @@ typedef struct {
 	int set;
 } POINT;
 
+float x[MAX_POINTS][MAX_DIMENTIONS+1] = { 0 };
+int y[MAX_POINTS] = { 0 };
 
 int readPointFromFile(FILE * fp, POINT * points, int pointIndex, int K)
 {
@@ -49,6 +51,24 @@ int readPointFromFile(FILE * fp, POINT * points, int pointIndex, int K)
 	}
 	points[pointIndex].x[K] = 1;
 	if (!fscanf(fp, "%d \n", &(points[pointIndex].set)))
+		return 0;
+	return 1;
+}
+
+int readPointFromFileXY(FILE * fp, float * x, int * y, int pointIndex, int K)
+{
+	if (feof(fp))
+	{
+		return 0;
+	}
+
+	for (int i = 0; i < K; i++)
+	{
+		if (!fscanf(fp, "%f ", &x[i]))
+			return 0;
+	}
+	x[K] = 1;
+	if (!fscanf(fp, "%d \n", &y[pointIndex]))
 		return 0;
 	return 1;
 }
@@ -87,15 +107,26 @@ void zeroWeights(float ** weights, int K, int numOfWeights)
 	}
 }
 
-int isMiss(int &signResult, POINT * points, int i, float * weights, int K, int &Nmis)
+int isMiss(POINT * points, int index, float * weights, int K, int &Nmis)
 {
-	signResult = sign(func(points[i].x, weights, K));
-	if (signResult != points[i].set)
+	int signResult = sign(func(points[index].x, weights, K));
+	if (signResult != points[index].set)
 	{
 		return 1;
 	}
 	return 0;
 }
+
+int isMissXY(float * x, int * y, int index, float * weights, int K, int &Nmis)
+{
+	int signResult = sign(func(&x[index], weights, K));
+	if (signResult != y[index])
+	{
+		return 1;
+	}
+	return 0;
+}
+
 
 void freeMemory(int N, POINT * points, int numOfSegments, float ** weights, bool * isSegmentClassifiedProperly, char * buffer)
 {
@@ -130,13 +161,15 @@ int main(int argc, char *argv[])
 
 	float alpha, alphaZero, alphaMax, QC, quality;
 	int N, Nmis = 0, K, LIMIT, pointNum = 0;
-	bool isAlphaFound = false;
+	int isAlphaFound = false;
 	double t1, t2;
 	POINT * points;
 	FILE * fp;
 	float ** weights;
 	int numOfSegments = 16;
 	char * buffer;
+	int * isAlphaFoundArr;
+	int processWithMinAlpha = -1;
 
 	//if (numprocs < 2)
 	//{
@@ -156,7 +189,6 @@ int main(int argc, char *argv[])
 
 		// N    K    alphaZero   alphaMax LIMIT   QC
 		fscanf(fp, "%d %d %f %f %d %f \n", &N, &K, &alphaZero, &alphaMax, &LIMIT, &QC);
-		//MPI_Recv(&answer, 1, MPI_INT, 1, 0, MPI_COMM_WORLD, &status);
 	}
 
 	MPI_Bcast(&N, 1, MPI_INT, 0, MPI_COMM_WORLD);
@@ -168,6 +200,7 @@ int main(int argc, char *argv[])
 
 	points = (POINT*)malloc(sizeof(POINT) * N);
 	weights = (float**)malloc(sizeof(float*) * numOfSegments);
+	isAlphaFoundArr = (int*)calloc(numprocs, sizeof(int));
 	bool * isSegmentClassifiedProperly = (bool*)calloc(numOfSegments, sizeof(bool));
 	for (int i = 0; i < numOfSegments; i++)
 	{
@@ -192,7 +225,19 @@ int main(int argc, char *argv[])
 		fclose(fp);
 	}
 
+	//if (myid == 0)
+	//{
+	//	for (int i = 0; i < N; i++)
+	//	{
+	//		readPointFromFileXY(fp, x[i], y, i, K);
+	//	}
+	//	fclose(fp);
+	//}
+
 	t1 = MPI_Wtime();
+
+	//MPI_Bcast(x, MAX_POINTS*(MAX_DIMENTIONS + 1), MPI_FLOAT, 0, MPI_COMM_WORLD);
+	//MPI_Bcast(y, MAX_POINTS, MPI_INT, 0, MPI_COMM_WORLD);
 
 	if (myid == 0)
 	{
@@ -215,13 +260,7 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	//for (int i = 0; i < N; i++) 
-	//{
-	//	MPI_Bcast(points[i].x, K + 1, MPI_FLOAT, 0, MPI_COMM_WORLD);
-	//	MPI_Bcast(&points[i].set, 1, MPI_INT, 0, MPI_COMM_WORLD);
-	//}
-
-	
+	//MPI_Scatter(isAlphaFoundArr, 1, MPI_INT, &isAlphaFound, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
 	// Give each process an alpha range to work on
 	float alpha_low = alphaZero + myid * ((alphaMax-alphaZero) / numprocs);
@@ -247,10 +286,13 @@ int main(int argc, char *argv[])
 					{
 						if (isSegmentClassifiedProperly[i])
 						{
-							int signResult = sign(func(points[i].x, weights[i], K));
-							if (signResult != points[i].set)
+							//int signResult = sign(func(x[j], weights[i], K));
+							//if (signResult != y[j])
+							int signResult = sign(func(points[j].x, weights[i], K));
+							if (signResult != points[j].set)
 							{
-								updateWeights(points[i].x, weights[i], signResult, alpha, K);
+								//updateWeights(x[j], weights[i], signResult, alpha, K);
+								updateWeights(points[j].x, weights[i], signResult, alpha, K);
 								isSegmentClassifiedProperly[i] = false;
 								break;
 							}
@@ -290,8 +332,8 @@ int main(int argc, char *argv[])
 		#pragma omp parallel for reduction(+:Nmis)
 		for (int i = 0; i < N; i++) // Count number of misses for evaluation of quality 
 		{
-			int signResult = 0;
-			Nmis += isMiss(signResult, points, i, weights[0], K, Nmis);
+			Nmis += isMiss(points, i, weights[0], K, Nmis);
+			//Nmis += isMissXY(x[i], y, i, weights[0], K, Nmis);
 		}
 
 		quality = (float)Nmis / N;
@@ -301,18 +343,33 @@ int main(int argc, char *argv[])
 			isAlphaFound = true;
 			break;
 		}
-		//alpha += alphaZero;
 	}
-	float min_quality = 0;
 
-	MPI_Reduce(&quality, &min_quality, 1, MPI_FLOAT, MPI_MIN, 0, MPI_COMM_WORLD);
+	// Gather results from each process
+	float * final_weights = (float*)calloc(numprocs * (K + 1), sizeof(float));
+	float * alpha_buf = (float*)calloc(numprocs, sizeof(float));
+	float * quality_buf = (float*)calloc(numprocs, sizeof(float));
 
-	//quality = min_quality;
+	MPI_Gather(&isAlphaFound, 1, MPI_INT, isAlphaFoundArr, 1, MPI_INT, 0, MPI_COMM_WORLD);
+	MPI_Gather(&alpha, 1, MPI_FLOAT, alpha_buf, 1, MPI_FLOAT, 0, MPI_COMM_WORLD);
+	MPI_Gather(&quality, 1, MPI_FLOAT, quality_buf, 1, MPI_FLOAT, 0, MPI_COMM_WORLD);
+	MPI_Gather(weights[0], K + 1, MPI_FLOAT, final_weights, K + 1, MPI_FLOAT, 0, MPI_COMM_WORLD);
 
 	t2 = MPI_Wtime();
 
 	if (myid == 0)
 	{
+		// Find lowest value of viable alpha from other processes
+		processWithMinAlpha = -1;
+		for (int i = 0; i < numprocs; i++)
+		{
+			if (isAlphaFoundArr[i])
+			{
+				processWithMinAlpha = i;
+				break;
+			}
+		}
+
 		fp = fopen(OUTPUT_FILE, "w");
 		if (fp == NULL)
 		{
@@ -322,32 +379,32 @@ int main(int argc, char *argv[])
 			exit(EXIT_FAILURE);
 		}
 
-		//// Print results to CMD 
-		//if (isAlphaFound)
-		//{
-		//	printf("Alpha minimum: %1.4f\n", alpha);
-		//	for (int i = 0; i < K + 1; i++)
-		//	{
-		//		printf("W%d: %1.4f\n", i + 1, weights[0][i]);
-		//	}
-		//	printf("q: %1.5f\n", quality);
-
-		//	printf("\nMPI_Wtime: %1.6f seconds\n", t2 - t1);
-		//}
-		//else
-		//{
-		//	printf("Alpha is not found\n");
-		//}
-
-		// Print results to output.txt
-		if (isAlphaFound)
+		// Print results to CMD 
+		if (processWithMinAlpha != -1)
 		{
-			fprintf(fp, "Alpha minimum: %1.4f\n", alpha);
+			printf("Alpha minimum: %1.4f\n", alpha_buf[processWithMinAlpha]);
 			for (int i = 0; i < K + 1; i++)
 			{
-				fprintf(fp, "%1.4f\n", weights[0][i]);
+				printf("%1.4f\n", final_weights[i + processWithMinAlpha*(K+1)]);
 			}
-			fprintf(fp, "%1.5f\n", quality);
+			printf("q: %1.5f\n", quality_buf[processWithMinAlpha]);
+
+			printf("\nMPI_Wtime: %1.6f seconds\n", t2 - t1);
+		}
+		else
+		{
+			printf("Alpha is not found\n");
+		}
+
+		// Print results to output.txt
+		if (processWithMinAlpha != -1)
+		{
+			fprintf(fp, "Alpha minimum: %1.4f\n", alpha_buf[processWithMinAlpha]);
+			for (int i = 0; i < K + 1; i++)
+			{
+				fprintf(fp, "%1.4f\n", final_weights[i + processWithMinAlpha*(K + 1)]);
+			}
+			fprintf(fp, "%1.5f\n", quality_buf[processWithMinAlpha]);
 
 			fprintf(fp, "\nMPI_Wtime: %1.6f seconds\n", t2 - t1);// fflush(stdout);
 		}
@@ -359,111 +416,13 @@ int main(int argc, char *argv[])
 		fclose(fp);
 	}
 
-	// Print results to CMD 
-	if (isAlphaFound)
-
-	{
-		printf("\nAlpha minimum: %1.4f\n", alpha);
-		for (int i = 0; i < K + 1; i++)
-		{
-			printf("W%d: %1.4f\n", i + 1, weights[0][i]);
-		}
-		printf("q: %1.5f\n", quality);
-
-		printf("\nMPI_Wtime: %1.6f seconds\n", t2 - t1);
-	}
-	else
-	{
-		printf("Alpha is not found\n");
-	}
+	printf("\nProcess #%d MPI_Wtime: %1.6f seconds\n", myid, t2 - t1);
 
 	// free memory
 	freeMemory(N, points, numOfSegments, weights, isSegmentClassifiedProperly, buffer);
+	free(isAlphaFoundArr);
 
 	MPI_Finalize();
 	exit(EXIT_SUCCESS);
 	return 0;
 }
-
-//#include <stdio.h>
-//#include <omp.h>
-//#include <vector>
-//
-//using namespace std;
-//
-//int segment_read(char *buff, const int len, const int count) {
-//	return 1;
-//}
-//
-//void foo(char* buffer, size_t size) {
-//	int count_of_reads = 0;
-//	int count = 1;
-//	std::vector<int> *posa;
-//	int nthreads;
-//
-//#pragma omp parallel 
-//	{
-//		nthreads = omp_get_num_threads();
-//		const int ithread = omp_get_thread_num();
-//#pragma omp single 
-//		{
-//			posa = new vector<int>[nthreads];
-//			posa[0].push_back(0);
-//		}
-//
-//		//get the number of lines and end of line position
-//#pragma omp for reduction(+: count)
-//		for (int i = 0; i < size; i++) {
-//			if (buffer[i] == '\n') { //should add EOF as well to be safe
-//				count++;
-//				posa[ithread].push_back(i);
-//			}
-//		}
-//
-//#pragma omp for     
-//		for (int i = 1; i < count; i++) {
-//			const int len = posa[ithread][i] - posa[ithread][i - 1];
-//			char* buff = &buffer[posa[ithread][i - 1]];
-//			const int sequence_counter = segment_read(buff, len, i);
-//			if (sequence_counter == 1) {
-//#pragma omp atomic
-//				count_of_reads++;
-//				printf("\n Total No. of reads: %d \n", count_of_reads);
-//			}
-//
-//		}
-//	}
-//	delete[] posa;
-//}
-//
-//int main() {
-//	FILE * pFile;
-//	long lSize;
-//	char * buffer;
-//	size_t result;
-//
-//	pFile = fopen("myfile.txt", "rb");
-//	if (pFile == NULL) { fputs("File error", stderr); exit(1); }
-//
-//	// obtain file size:
-//	fseek(pFile, 0, SEEK_END);
-//	lSize = ftell(pFile);
-//	rewind(pFile);
-//
-//	// allocate memory to contain the whole file:
-//	buffer = (char*)malloc(sizeof(char)*lSize);
-//	if (buffer == NULL) { fputs("Memory error", stderr); exit(2); }
-//
-//	// copy the file into the buffer:
-//	result = fread(buffer, 1, lSize, pFile);
-//	if (result != lSize) { fputs("Reading error", stderr); exit(3); }
-//
-//	/* the whole file is now loaded in the memory buffer. */
-//	foo(buffer, result);
-//	// terminate
-//
-//
-//	fclose(pFile);
-//	free(buffer);
-//	return 0;
-//}
