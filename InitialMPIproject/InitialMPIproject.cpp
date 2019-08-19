@@ -128,22 +128,6 @@ int isMissXY(float * x, int * y, int index, float * weights, int K, int &Nmis)
 }
 
 
-void freeMemory(int N, POINT * points, int numOfSegments, float ** weights, bool * isSegmentClassifiedProperly, char * buffer)
-{
-	for (int i = 0; i < N; i++)
-	{
-		free(points[i].x);
-	}
-	for (int i = 0; i < numOfSegments; i++)
-	{
-		free(weights[i]);
-	}
-	free(weights);
-	free(points);
-	free(isSegmentClassifiedProperly);
-	free(buffer);
-}
-
 int main(int argc, char *argv[])
 {
 	int  namelen, numprocs, myid;
@@ -167,15 +151,14 @@ int main(int argc, char *argv[])
 	FILE * fp;
 	float ** weights;
 	int numOfSegments = 16;
-	char * buffer;
 	int * isAlphaFoundArr;
 	int processWithMinAlpha = -1;
 
-	//if (numprocs < 2)
-	//{
-	//	printf("Number of processes must be greater than 1\n");
-	//	MPI_Abort(MPI_COMM_WORLD, 0);
-	//}
+	if (numprocs < 2)
+	{
+		printf("Number of processes must be greater than 1\n");
+		MPI_Abort(MPI_COMM_WORLD, 0);
+	}
 
 	if (myid == 0)
 	{
@@ -187,9 +170,9 @@ int main(int argc, char *argv[])
 			exit(EXIT_FAILURE);
 		}
 
-		// N    K    alphaZero   alphaMax LIMIT   QC
 		fscanf(fp, "%d %d %f %f %d %f \n", &N, &K, &alphaZero, &alphaMax, &LIMIT, &QC);
 	}
+
 
 	MPI_Bcast(&N, 1, MPI_INT, 0, MPI_COMM_WORLD);
 	MPI_Bcast(&K, 1, MPI_INT, 0, MPI_COMM_WORLD);
@@ -212,60 +195,26 @@ int main(int argc, char *argv[])
 		points[i].x = (float*)malloc(sizeof(float) * (K + 1));
 	}
 
-	buffer = (char*)malloc(sizeof(float) * N * (K + 2));
-	int BUFFER_SIZE = sizeof(float) * N * (K + 2);
-	int position;
+	t1 = MPI_Wtime();
 
-	if (myid == 0)
+	for (int i = 0; i < N; i++)
 	{
-		for (int i = 0; i < N; i++)
+		if (myid == 0)
 		{
 			readPointFromFile(fp, points, i, K);
 		}
-		fclose(fp);
+		MPI_Bcast(points[i].x, K + 1, MPI_FLOAT, 0, MPI_COMM_WORLD);
+		MPI_Bcast(&points[i].set, 1, MPI_INT, 0, MPI_COMM_WORLD);
 	}
-
-	//if (myid == 0)
-	//{
-	//	for (int i = 0; i < N; i++)
-	//	{
-	//		readPointFromFileXY(fp, x[i], y, i, K);
-	//	}
-	//	fclose(fp);
-	//}
-
-	t1 = MPI_Wtime();
-
-	//MPI_Bcast(x, MAX_POINTS*(MAX_DIMENTIONS + 1), MPI_FLOAT, 0, MPI_COMM_WORLD);
-	//MPI_Bcast(y, MAX_POINTS, MPI_INT, 0, MPI_COMM_WORLD);
-
 	if (myid == 0)
 	{
-		position = 0;
-		for (int i = 0; i < N; i++)
-		{
-			MPI_Pack(points[i].x, K + 1, MPI_FLOAT, buffer, BUFFER_SIZE, &position, MPI_COMM_WORLD);
-			MPI_Pack(&points[i].set, 1, MPI_INT, buffer, BUFFER_SIZE, &position, MPI_COMM_WORLD);
-		}
+		fclose(fp);
 	}
-	MPI_Bcast(&position, 1, MPI_INT, 0, MPI_COMM_WORLD);
-	MPI_Bcast(buffer, position, MPI_PACKED, 0, MPI_COMM_WORLD);
-	if (myid != 0)
-	{
-		position = 0;
-		for (int i = 0; i < N; i++)
-		{
-			MPI_Unpack(buffer, BUFFER_SIZE, &position, points[i].x, K + 1, MPI_FLOAT, MPI_COMM_WORLD);
-			MPI_Unpack(buffer, BUFFER_SIZE, &position, &points[i].set, 1, MPI_INT, MPI_COMM_WORLD);
-		}
-	}
-
-	//MPI_Scatter(isAlphaFoundArr, 1, MPI_INT, &isAlphaFound, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
 	// Give each process an alpha range to work on
 	float alpha_low = alphaZero + myid * ((alphaMax-alphaZero) / numprocs);
 	float alpha_high = alphaZero + (myid + 1) * ((alphaMax - alphaZero) / numprocs);
-	//QC = 0.01f;
+
 	for (alpha = alpha_low; alpha < alpha_high; alpha += alphaZero)
 	{
 		zeroWeights(weights, K, numOfSegments);
@@ -374,7 +323,6 @@ int main(int argc, char *argv[])
 		if (fp == NULL)
 		{
 			printf("file could not be opened for writing\n");
-			freeMemory(N, points, numOfSegments, weights, isSegmentClassifiedProperly, buffer);
 			MPI_Finalize();
 			exit(EXIT_FAILURE);
 		}
@@ -419,8 +367,21 @@ int main(int argc, char *argv[])
 	printf("\nProcess #%d MPI_Wtime: %1.6f seconds\n", myid, t2 - t1);
 
 	// free memory
-	freeMemory(N, points, numOfSegments, weights, isSegmentClassifiedProperly, buffer);
+	for (int i = 0; i < N; i++)
+	{
+		free(points[i].x);
+	}
+	for (int i = 0; i < numOfSegments; i++)
+	{
+		free(weights[i]);
+	}
+	free(weights);
+	free(points);
+	free(isSegmentClassifiedProperly);
 	free(isAlphaFoundArr);
+	free(final_weights);
+	free(alpha_buf);
+	free(quality_buf);
 
 	MPI_Finalize();
 	exit(EXIT_SUCCESS);
